@@ -1,0 +1,23 @@
+gcc -g -o Test/hello_malloc Test/hello_malloc.c
+g++ -g -o Test/hello_new Test/hello_new.cpp
+gcc -g -o Test/hello_pthread Test/hello_pthread.c -pthread
+gcc -g -o Test/hello_pthread_lock Test/hello_pthread_lock.c -pthread
+gcc -g -o Test/hello_pthread_signal Test/hello_pthread_signal.c -pthread
+gcc -g -o Test/matrix_transpose Test/matrix_transpose.c -pthread
+
+gcc -g -I. -o Test/hello_pmc Test/hello_pmc.c
+gcc -g -I. -o Test/hello_pthread_pmc Test/hello_pthread_pmc.c -pthread
+gcc -g -I. -o Test/hello_pmcthread_pmc Test/hello_pmcthread_pmc.c -pthread
+gcc -g -I. -o Test/hello_pthread_lock_pmc Test/hello_pthread_lock_pmc.c -pthread
+
+gcc -g -I. -o Test/matrix_transpose_pmc Test/matrix_transpose_pmc.c -pthread
+
+gcc -g -I. -o Test/matrix_transpose_pmc_baseline Test/matrix_transpose_pmc_baseline.c -pthread
+gcc -g -I. -o Test/matrix_transpose_pmc_range Test/matrix_transpose_pmc_range.c -pthread
+gcc -g -I. -o Test/matrix_transpose_pmc_reserve Test/matrix_transpose_pmc_reserve.c -pthread
+gcc -g -I. -o Test/matrix_transpose_pmc_writefirst Test/matrix_transpose_pmc_writefirst.c -pthread
+gcc -g -I. -o Test/matrix_transpose_pmc_fullopt Test/matrix_transpose_pmc_fullopt.c -pthread
+
+gcc -o globalvariable globalvariable.c
+
+
