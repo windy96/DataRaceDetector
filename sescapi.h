@@ -35,10 +35,10 @@ void	wb_reserve(void *addr, int size);
 void	wr_first(void *addr, int size);
 
 //	Memory Allocation
-void *malloc_pmc(size_t size);
-void *calloc_pmc(size_t nmemb, size_t size);
-void *realloc_pmc(void *ptr, size_t size);
-void free_pmc(void *ptr);
+void *malloc_pmc(size_t size) __attribute__((noinline));
+void *calloc_pmc(size_t nmemb, size_t size) __attribute__((noinline));
+void *realloc_pmc(void *ptr, size_t size) __attribute__((noinline));
+void free_pmc(void *ptr) __attribute__((noinline));
 
 //	PMC Thread Functions
 typedef struct pmcthread_barrier

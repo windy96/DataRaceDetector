@@ -31,7 +31,7 @@
 //	Configurable Parameters
 //-------------------------------------------------------------------
 
-//#define __64BIT__
+#define __64BIT__
 //	Maximum worker threads are set to 32.
 #define MAX_WORKER	4
 //	Maximum threads are maximum work threads + 1 to support master-workers execution model.
@@ -304,6 +304,7 @@ struct WordStatus
 {
 	int				state;
 	unsigned int	proc;
+	int				epoch;
 	int				segment;
 	void*			lock;
 
@@ -377,6 +378,7 @@ public:
 		{
 			pState[i].state = 0;
 			pState[i].proc = 9999;	// proc is unsigned.
+			pState[i].epoch = 0;
 			pState[i].segment = 0;
 			pState[i].lock = 0;
 
@@ -525,6 +527,7 @@ public:
 
 				pStatus->state = 0;
 				pStatus->proc = 9999;
+				pStatus->epoch = 0;
 				pStatus->segment = 0;
 				pStatus->lock = 0;
 
@@ -725,6 +728,7 @@ struct GlobalVariableStruct {
 		{
 			pState[i].state = 0;
 			pState[i].proc = 9999;
+			pState[i].epoch = 0;
 			pState[i].segment = 0;
 			pState[i].lock = 0;
 
@@ -742,6 +746,7 @@ struct GlobalVariableStruct {
 		{
 			pState[i].state = 0;
 			pState[i].proc = 9999;
+			pState[i].epoch = 0;
 			pState[i].segment = 0;
 			pState[i].lock = 0;
 
@@ -1860,6 +1865,20 @@ VOID ImageLoad(IMG img, VOID *v)
 			IARG_END);
 	}
 
+	rtn = RTN_FindByName(img, "_Z10malloc_pmcm");
+	if (RTN_Valid(rtn)) {
+		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
+						"malloc", PIN_PARG(int), PIN_PARG_END() );
+		RTN_ReplaceSignature(rtn, AFUNPTR(mallocWrapper), 
+			IARG_PROTOTYPE, proto,
+			IARG_CONST_CONTEXT,
+			IARG_ORIG_FUNCPTR,
+			IARG_THREAD_ID,
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 0, 
+			IARG_END);
+	}
+
+
 	rtn = RTN_FindByName(img, "calloc_pmc");
 	if (RTN_Valid(rtn)) {
 		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
@@ -1874,6 +1893,21 @@ VOID ImageLoad(IMG img, VOID *v)
 			IARG_END);
 	}
 
+	rtn = RTN_FindByName(img, "_Z10calloc_pmcmm");
+	if (RTN_Valid(rtn)) {
+		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
+						"calloc", PIN_PARG(int), PIN_PARG(int), PIN_PARG_END() );
+		RTN_ReplaceSignature(rtn, AFUNPTR(callocWrapper), 
+			IARG_PROTOTYPE, proto,
+			IARG_CONST_CONTEXT,
+			IARG_ORIG_FUNCPTR,
+			IARG_THREAD_ID,
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 0, 
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 1, 
+			IARG_END);
+	}
+
+
 	rtn = RTN_FindByName(img, "realloc_pmc");
 	if (RTN_Valid(rtn)) {
 		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
@@ -1887,6 +1921,21 @@ VOID ImageLoad(IMG img, VOID *v)
 			IARG_FUNCARG_ENTRYPOINT_VALUE, 1, 
 			IARG_END);
 	}
+
+	rtn = RTN_FindByName(img, "_Z11realloc_pmcPvm");
+	if (RTN_Valid(rtn)) {
+		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
+						"realloc", PIN_PARG(VOID *), PIN_PARG(int), PIN_PARG_END() );
+		RTN_ReplaceSignature(rtn, AFUNPTR(reallocWrapper), 
+			IARG_PROTOTYPE, proto,
+			IARG_CONST_CONTEXT,
+			IARG_ORIG_FUNCPTR,
+			IARG_THREAD_ID,
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 0, 
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 1, 
+			IARG_END);
+	}
+
 
 	rtn = RTN_FindByName(img, "posix_memalign_pmc");
 	if (RTN_Valid(rtn)) {
@@ -2544,6 +2593,7 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 				//else
 					pStatus->state = 1;
 				pStatus->proc = tid;
+				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
 				//pStatus->lock = MutexLock[tid];
 
@@ -2583,6 +2633,7 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 				}
 
 				// if tid is the same, stay at the same state.
+				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
 				//pStatus->lock = MutexLock[tid];	
 
@@ -2630,8 +2681,8 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 					Logger.warn("[tid: %d] going to racy due to unlocked read (on wr state): addr 0x%lx", tid, a);
 					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
 					MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
-					Logger.warn("previously written by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+					Logger.warn("previously written by %d in epoch %d segment %d \n\tat location: col %d line %d file %s", 
+					pStatus->proc, pStatus->epoch, pStatus->segment, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
 					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
 
 					pStatus->state = 4;
@@ -2667,6 +2718,7 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 
 				pStatus->proc = tid;
 				//pStatus->lock = MutexLock[tid];
+				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
 
 				pStatus->src.col = col;
@@ -2679,12 +2731,13 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 					Logger.warn("[tid: %d] Locked read for previoulsy non-locked (on racy state): addr 0x%lx", tid, a);
 					Logger.warn("%s (alloc) offset %d(0x%lx)", 
 					MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
-					Logger.warn("previously written by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+					Logger.warn("previously written by %d in epoch %d segment %d \n\tat location: col %d line %d file %s", 
+					pStatus->proc, pStatus->epoch, pStatus->segment, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
 					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
 
 					pStatus->state = 5;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					//pStatus->lock = MutexLock[tid];
 
@@ -2807,6 +2860,7 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 				//else
 					pStatus->state = 1;
 				pStatus->proc = tid;
+				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
 				//pStatus->lock = MutexLock[tid];
 
@@ -2847,6 +2901,7 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 				}
 
 				// if tid is the same, stay at the same state.
+				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
 				//pStatus->lock = MutexLock[tid];	
 
@@ -2893,8 +2948,8 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 					Logger.warn("[tid: %d] going to racy due to unlocked read (on wr state): addr 0x%lx", tid, a);
 					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
 					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
-					Logger.warn("previously written by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+					Logger.warn("previously written by %d in epoch %d segment %d \n\tat location: col %d line %d file %s", 
+					pStatus->proc, pStatus->epoch, pStatus->segment, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
 					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
 
 					pStatus->state = 4;
@@ -2930,6 +2985,7 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 
 				pStatus->proc = tid;
 				//pStatus->lock = MutexLock[tid];
+				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
 
 				pStatus->src.col = col;
@@ -2942,12 +2998,13 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 					Logger.warn("[tid: %d] Locked read for previoulsy non-locked (on racy state): addr 0x%lx", tid, a);
 					Logger.warn("%s (alloc) offset %d(0x%lx)", 
 					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
-					Logger.warn("previously written by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+					Logger.warn("previously written by %d in epoch %d segment %d \n\tat location: col %d line %d file %s", 
+					pStatus->proc, pStatus->epoch, pStatus->segment, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
 					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
 
 					pStatus->state = 5;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					//pStatus->lock = MutexLock[tid];
 
@@ -3106,6 +3163,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 				else
 					pStatus->state = 2;
 				pStatus->proc = tid;
+				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
 				pStatus->lock = MutexLock[tid];
 
@@ -3127,6 +3185,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 
 					pStatus->state = 5;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 
@@ -3147,6 +3206,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 					pStatus->state = 2;		// if same tid, go to write state
 				}
 
+				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
 				pStatus->lock = MutexLock[tid];	
 
@@ -3175,6 +3235,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 	
 					pStatus->state = 5;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 
@@ -3188,6 +3249,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 					if (prevSeg >= pStatus->segment) {
 						// ordering.
 						pStatus->proc = tid;
+						pStatus->epoch = BarrierCount;
 						pStatus->segment = SegmentCount[tid];
 						pStatus->lock = MutexLock[tid];
 
@@ -3207,6 +3269,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 
 					pStatus->state = 4;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 
@@ -3217,6 +3280,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 
 				// if tid is the same,
 				pStatus->proc = tid;
+				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
 				pStatus->lock = MutexLock[tid];
 
@@ -3236,6 +3300,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 		
 					pStatus->state = 5;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 
@@ -3250,6 +3315,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 					if (prevSeg >= pStatus->segment) {
 						pStatus->state = 2;
 						pStatus->proc = tid;
+						pStatus->epoch = BarrierCount;
 						pStatus->segment = SegmentCount[tid];
 						pStatus->lock = MutexLock[tid];
 				
@@ -3261,6 +3327,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 
 					pStatus->state = 4;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 				
@@ -3271,6 +3338,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 				else {
 					pStatus->state = 2;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 				
@@ -3291,6 +3359,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 
 					pStatus->state = 5;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 
@@ -3320,6 +3389,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 
 					pStatus->state = 1;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 
@@ -3340,6 +3410,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 		
 					pStatus->state = 5;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 
@@ -3351,6 +3422,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 
 				pStatus->state = 5;
 				pStatus->proc = tid;
+				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
 				pStatus->lock = MutexLock[tid];
 
@@ -3397,6 +3469,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 				else
 					pStatus->state = 2;
 				pStatus->proc = tid;
+				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
 				pStatus->lock = MutexLock[tid];
 
@@ -3416,6 +3489,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 		
 					pStatus->state = 5;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 
@@ -3436,6 +3510,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 					pStatus->state = 2;		// if same tid, go to write state
 				}
 
+				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
 				pStatus->lock = MutexLock[tid];	
 
@@ -3464,6 +3539,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 		
 					pStatus->state = 5;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 
@@ -3477,6 +3553,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 					if (prevSeg >= pStatus->segment) {
 						// ordering.
 						pStatus->proc = tid;
+						pStatus->epoch = BarrierCount;
 						pStatus->segment = SegmentCount[tid];
 						pStatus->lock = MutexLock[tid];
 
@@ -3496,6 +3573,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 
 					pStatus->state = 4;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 
@@ -3506,6 +3584,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 
 				// if tid is the same,
 				pStatus->proc = tid;
+				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
 				pStatus->lock = MutexLock[tid];
 
@@ -3525,6 +3604,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 		
 					pStatus->state = 5;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 
@@ -3539,6 +3619,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 					if (prevSeg >= pStatus->segment) {
 						pStatus->state = 2;
 						pStatus->proc = tid;
+						pStatus->epoch = BarrierCount;
 						pStatus->segment = SegmentCount[tid];
 						pStatus->lock = MutexLock[tid];
 				
@@ -3550,6 +3631,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 
 					pStatus->state = 4;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 				
@@ -3560,6 +3642,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 				else {
 					pStatus->state = 2;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 				
@@ -3580,6 +3663,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 
 					pStatus->state = 5;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 
@@ -3608,6 +3692,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 		
 					pStatus->state = 1;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 
@@ -3628,6 +3713,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 		
 					pStatus->state = 5;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 
@@ -3639,6 +3725,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 
 				pStatus->state = 5;
 				pStatus->proc = tid;
+				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
 				pStatus->lock = MutexLock[tid];
 
@@ -3771,6 +3858,7 @@ VOID Instruction(INS ins, void * v)
 		// INS_InsertPredicatedCall is identical to INS_InsertCall except predicated instructions.
 		// Predicated instructions are CMOVcc, FCMOVcc and REPped string ops.
 
+
 		if (INS_MemoryOperandIsRead(ins, memOp)) {
 			// read operation
 
@@ -3786,6 +3874,7 @@ VOID Instruction(INS ins, void * v)
 			
 		}
 
+
 		if (INS_MemoryOperandIsWritten(ins, memOp)) {
 			// write operation
 
@@ -3799,6 +3888,7 @@ VOID Instruction(INS ins, void * v)
 					IARG_END);
 			
 		}
+
 	}	// end of for loop, memOp
 	//ReleaseLock(&Lock);
 }	// void Instruction
@@ -4026,8 +4116,10 @@ VOID ReadVariableInfo(char *filename)
 		sscanf(line, "%s %x %x", id, &addr, &size);
 		#endif
 		if (ExcludePotentialSystemVariables) {
-			if ((id[0] == '.') || (id[0] == '_'))
+			if (id[0] == '.')
 				continue;
+			//if (id[0] == '_')
+			//	continue;
 			if (!strcmp("stdin", id) || !strcmp("stdout", id) || !strcmp("stderr", id))
 				continue;
 		}

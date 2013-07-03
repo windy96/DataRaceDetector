@@ -46,8 +46,8 @@ int main(int argc, char *argv[])
 	{
 		line_num++;
 		sscanf(line, "%lx %c %c", &addr, &c1, &c2);
-		if (c1 != 'g')
-			continue;
+		//if (c1 != 'g')
+		//	continue;
 		if (c2 == '.')
 			continue;
 
