@@ -33,7 +33,7 @@
 
 #define __64BIT__
 //	Maximum worker threads are set to 32.
-#define MAX_WORKER	4
+#define MAX_WORKER	8
 //	Maximum threads are maximum work threads + 1 to support master-workers execution model.
 #define MAX_THREADS MAX_WORKER+1
 #define STATE_BITS	3
@@ -392,7 +392,13 @@ public:
 		prevAddr[tid] = addr;
 		prevSize[tid] = size;
 
-		Logger.log("MAlloc tracker adds addr 0x%lx with size 0x%x.", addr, size);
+		Logger.log("MAlloc tracker adds addr 0x%lx with size 0x%x. %d entries are added.", addr, size, wordSize);
+		int sum = 0;
+		int i;
+		for (i = 0; i < wordSize / WORD_SIZE; i++)
+			sum += (stateMap[addr]) [i].state;
+		Logger.log("verify: sum=%d i=%d", sum, i);
+			
 	}
 
 	void remove(ADDRINT addr) 
@@ -485,6 +491,7 @@ public:
 		startAddr = 0;	// this is for turning off warning message.
 		for (it = addrMap.begin(); it != addrMap.end(); it++)
 		{
+			//Logger.log("wordStatus: 0x%lx - 0x%lx", (*it).first, (*it).first + (*it).second);
 			startAddr = (*it).first;
 			endAddr = startAddr + (*it).second;
 
@@ -502,7 +509,8 @@ public:
 			return NULL;
 		}
 
-		return &( ( (stateMap[startAddr]) )[(addr - startAddr) / 4] );
+		//Logger.log("wordStatus: match found for 0x%lx: 0x%lx - 0x%lx: %d th entry", addr, startAddr, endAddr, (addr-startAddr)/WORD_SIZE);
+		return &( ( (stateMap[startAddr]) )[(addr - startAddr) / WORD_SIZE] );
 	}
 
 	void clear()
@@ -601,6 +609,7 @@ public:
 	{
 		ADDRINT	startAddr, endAddr;
 
+		startAddr = 0;
 		for (it = addrMap.begin(); it != addrMap.end(); it++)
 		{
 			startAddr = (*it).first;
@@ -673,6 +682,7 @@ public:
 	int established(int prev, int next)
 	{
 		int i;
+		Logger.log("established prev:%d next:%d", prev, next);
 		for (i = orderNext[next].size() - 1; i >= 0; i--)
 		{
 			if (orderNext[next][i] != -1) {
@@ -1162,6 +1172,7 @@ VOID* callocWrapper(CONTEXT *ctxt, AFUNPTR orig_function, THREADID tid, int nmeb
 	VOID *ret;
 
 	Logger.warn("[tid: %d] calloc is called with nmeb %d and size %d, but wrapper function for calloc is not verified yet.", tid, nmeb, size);
+	// calloc writes values, so write to this memory area should be added.
 
 	PIN_CallApplicationFunction(ctxt, PIN_ThreadId(),
 		CALLINGSTD_DEFAULT, orig_function,
@@ -1334,7 +1345,7 @@ VOID* freeWrapper(CONTEXT *ctxt, AFUNPTR orig_function, THREADID tid, VOID *ptr)
 	Logger.log("[tid: %d] free with ptr 0x%p returns.\n", tid, ptr);
 
 	// remove call is moved forward to prevent some wierd writes during free() call.
-	// MATracker.remove((ADDRINT) ptr);
+	MATracker.remove((ADDRINT) ptr);
 	ReleaseLock(&Lock);
 
 	return ret;
@@ -1940,7 +1951,7 @@ VOID ImageLoad(IMG img, VOID *v)
 	rtn = RTN_FindByName(img, "posix_memalign_pmc");
 	if (RTN_Valid(rtn)) {
 		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
-						"posix_memalign", PIN_PARG(VOID *), PIN_PARG(int), PIN_PARG_END() );
+						"posix_memalign", PIN_PARG(VOID **), PIN_PARG(int), PIN_PARG(int), PIN_PARG_END() );
 		RTN_ReplaceSignature(rtn, AFUNPTR(reallocWrapper), 
 			IARG_PROTOTYPE, proto,
 			IARG_CONST_CONTEXT,
@@ -1948,12 +1959,41 @@ VOID ImageLoad(IMG img, VOID *v)
 			IARG_THREAD_ID,
 			IARG_FUNCARG_ENTRYPOINT_VALUE, 0, 
 			IARG_FUNCARG_ENTRYPOINT_VALUE, 1, 
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 2, 
+			IARG_END);
+	}
+
+	rtn = RTN_FindByName(img, "_Z18posix_memalign_pmcPPVmm");
+	if (RTN_Valid(rtn)) {
+		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
+						"posix_memalign", PIN_PARG(VOID **), PIN_PARG(int), PIN_PARG(int), PIN_PARG_END() );
+		RTN_ReplaceSignature(rtn, AFUNPTR(reallocWrapper), 
+			IARG_PROTOTYPE, proto,
+			IARG_CONST_CONTEXT,
+			IARG_ORIG_FUNCPTR,
+			IARG_THREAD_ID,
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 0, 
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 1, 
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 2, 
 			IARG_END);
 	}
 
 	// more candidates: alloca, _alloca
 
 	rtn = RTN_FindByName(img, "free_pmc");
+	if (RTN_Valid(rtn)) {
+		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
+						"free", PIN_PARG(VOID *), PIN_PARG_END() );
+		RTN_ReplaceSignature(rtn, AFUNPTR(freeWrapper), 
+			IARG_PROTOTYPE, proto,
+			IARG_CONST_CONTEXT,
+			IARG_ORIG_FUNCPTR,
+			IARG_THREAD_ID,
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+			IARG_END);
+	}
+
+	rtn = RTN_FindByName(img, "_Z8free_pmcPv");
 	if (RTN_Valid(rtn)) {
 		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
 						"free", PIN_PARG(VOID *), PIN_PARG_END() );
@@ -2129,6 +2169,20 @@ VOID ImageLoad(IMG img, VOID *v)
 				IARG_END);
 		}
 
+		rtn = RTN_FindByName(img, "_Z22pthread_cond_wait_nullPvS_");
+		if (RTN_Valid(rtn)) {
+			PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
+							"pthread_cond_wait_null", PIN_PARG(VOID *), PIN_PARG(VOID *), PIN_PARG_END() );
+			RTN_ReplaceSignature(rtn, AFUNPTR(condWaitNullWrapper),
+				IARG_PROTOTYPE, proto,
+				IARG_CONST_CONTEXT,
+				IARG_ORIG_FUNCPTR,
+				IARG_THREAD_ID,
+				IARG_FUNCARG_ENTRYPOINT_VALUE, 0,
+				IARG_FUNCARG_ENTRYPOINT_VALUE, 1,
+				//IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
+				IARG_END);
+		}
 		// pthread_cond_signal
 		rtn = RTN_FindByName(img, "pthread_cond_signal");
 		if (RTN_Valid(rtn)) {
@@ -2559,19 +2613,36 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 	PIN_UnlockClient();
 
 	GetLock(&Lock, tid+1);
-	// if read is from allocated memory
-	if (MATracker.contain(memoryAddressRead)) {
+
+	bool	inAlloc = MATracker.contain(memoryAddressRead);
+	bool	inGlobal = isGlobalVariable(memoryAddressRead);
+
+
+	if (inAlloc || inGlobal) {
 		// File trace is disabled for now.
-		//GetLock(&Lock, tid+1);
 		//fprintf(Trace, "[tid: %d] %d Read address = 0x%lx\n", tid, BarrierCount, memoryAddressRead);
 		//fflush(Trace);
 		NumReads[tid].count++;
 		//ReleaseLock(&Lock);
 
-		if (MutexLocked[tid] == Locked)
+		if (MutexLocked[tid] == Locked) {
 			Logger.temp("[tid: %d] epoch: %d Locked / Read address = 0x%lx", tid, BarrierCount, memoryAddressRead);
-		else
+			// if (inGlobal) 
+			//Logger.log("[tid: %d] epoch: %d Locked / Read address = 0x%lx from %s", 
+			//	tid, BarrierCount, memoryAddressRead, getGlobalVariableName(memoryAddressRead));
+			//else
+			//Logger.log("[tid: %d] epoch: %d Locked / Read address = 0x%lx from %s (alloc)", 
+			//	tid, BarrierCount, memoryAddressRead, MATracker.getVariableName(memoryAddressRead).c_str());
+		}
+		else {
 			Logger.temp("[tid: %d] epoch: %d Read address = 0x%lx", tid, BarrierCount, memoryAddressRead);
+			//if (inGlobal
+			//Logger.log("[tid: %d] epoch: %d Read address = 0x%lx from %s",
+			//	tid, BarrierCount, memoryAddressRead, getGlobalVariableName(memoryAddressRead));
+			//else
+			//Logger.log("[tid: %d] epoch: %d Read address = 0x%lx from %s (alloc)", 
+			//	tid, BarrierCount, memoryAddressRead, MATracker.getVariableName(memoryAddressRead).c_str());
+		}
 
 
 		startWordAddress = memoryAddressRead & ADDR_MASK;
@@ -2580,22 +2651,27 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 
 		for (ADDRINT a = startWordAddress; a < memoryAddressRead + memoryReadSize; a += WORD_BYTES)
 		{
-			//if ( (* (MATracker.bitVector(a)) )[tid*2] == 1) {
-
 			struct WordStatus *pStatus;
-			pStatus = MATracker.wordStatus(a);
-			int prevSeg = Ordering.established(pStatus->proc, tid);
+			if (inGlobal)
+				pStatus = wordStatusForGlobalVariable(a);
+			else
+				pStatus = MATracker.wordStatus(a);
+			Logger.log("[tid: %d] before Ordering.established in read", tid);
+			int prevSeg = -1;
+			if (pStatus->proc != 9999)
+				prevSeg = Ordering.established(pStatus->proc, tid);
+			Logger.log("[tid: %d] after Ordering.established in read", tid);
 
 			switch (pStatus->state) {
 			case 0: // virgin
-				//if (MutexLocked[tid] == Locked)
-				//	pStatus->state = 5;
-				//else
+				if (MutexLocked[tid] == Locked)
+					pStatus->state = 5;
+				else
 					pStatus->state = 1;
 				pStatus->proc = tid;
 				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
-				//pStatus->lock = MutexLock[tid];
+				pStatus->lock = MutexLock[tid];
 
 				pStatus->src.col = col;
 				pStatus->src.line = line;
@@ -2603,17 +2679,31 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 				break;
 
 			case 1: // read
-				/*
 				if (MutexLocked[tid] == Locked) {
-					Logger.warn("[tid: %d] Locked read for previoulsy non-locked (on rd state): addr 0x%lx", tid, a);
-					Logger.warn("%s (alloc) offset %d(0x%lx)", 
-					MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
-					Logger.warn("previously read by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
+					if (pStatus->epoch < BarrierCount) {
+						// no warning
+						// because of epoch ordering
+					}
+					else if (prevSeg >= pStatus->segment) {
+						// no warning
+						// because of segment ordering
+					}
+					else {
+						Logger.warn("[tid: %d] Locked read for previoulsy non-locked (on rd state): addr 0x%lx", tid, a);
+						if (inGlobal)
+							Logger.warn("variable %s offset %d(0x%lx)", 
+							getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
+						else
+							Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
+							MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
+						Logger.warn("previously read by %d in location: col %d line %d file %s", 
+						pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+						Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
+					}
 		
 					pStatus->state = 5;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 
@@ -2622,20 +2712,25 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 					pStatus->src.filename = filename;
 					break;
 				}
-				*/
+
 
 				if (tid != pStatus->proc) {
-					if (prevSeg >= pStatus->segment)
+					if (pStatus->epoch < BarrierCount) {
+						pStatus->state = 1;	// stay
+					}
+					else if (prevSeg >= pStatus->segment) {
 						pStatus->state = 1;	// stay because there is ordering between prev read and current read.
+					}
 					else
 						pStatus->state = 3;	// no ordering
+
 					pStatus->proc = tid;
 				}
 
 				// if tid is the same, stay at the same state.
 				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
-				//pStatus->lock = MutexLock[tid];	
+				pStatus->lock = MutexLock[tid];	
 
 				pStatus->src.col = col;
 				pStatus->src.line = line;
@@ -2644,46 +2739,62 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 
 			case 2: // write
 				if (MutexLocked[tid] == Locked) {
+					if (pStatus->epoch < BarrierCount) {
+						// no warning
+					}
+					//else if (Ordering.established(pStatus->segment, SegmentCount[tid]) > -1)
+					else if (prevSeg >= pStatus->segment) {
+						// segment ordering
+					}
 					// temporarily commented
-					/*
-					Logger.warn("[tid: %d] Locked read for previoulsy non-locked (on wr state): addr 0x%lx", tid, a);
-					Logger.warn("%s (alloc) offset %d(0x%lx)", 
-					MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
-					Logger.warn("previously written by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
-					*/
-					// [FIXME] This is problematic.
-					/*
+					else {
+						Logger.warn("[tid: %d] Locked read for previoulsy non-locked (on wr state): addr 0x%lx", tid, a);
+						if (inGlobal) 
+							Logger.warn("variable %s offset %d(0x%lx)", 
+							getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
+						else
+							Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
+							MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
+						Logger.warn("previously written by %d in location: col %d line %d file %s", 
+						pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+						Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
+					}
+		
 					pStatus->state = 5;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
-					// [FIXME] This is problematic.
 					pStatus->lock = MutexLock[tid];
 
 					pStatus->src.col = col;
 					pStatus->src.line = line;
 					pStatus->src.filename = filename;
-					*/
 					break;
 				}
 
+
 				if (tid != pStatus->proc) {
+					if (pStatus->epoch < BarrierCount)
+						break;
 					if (prevSeg >= pStatus->segment)
 						// ordering.
 						// but stay at write state with previous info.
 						// maintain 'write' col, line, filename for future use.
-						// Logger.log("ordering constraints make this race as non-race.");
 						break;
 					// [FIXME] this has problems.
 
 					// no ordering, thus a data race.
 					Logger.warn("[tid: %d] going to racy due to unlocked read (on wr state): addr 0x%lx", tid, a);
-					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
-					MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
+					if (inGlobal)
+						Logger.warn("variable %s offset %d(0x%lx)", 
+						getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
+					else
+						Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
+						MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
 					Logger.warn("previously written by %d in epoch %d segment %d \n\tat location: col %d line %d file %s", 
 					pStatus->proc, pStatus->epoch, pStatus->segment, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
+					Logger.warn("read by %d in epoch %d segment %d \n\tat location: col %d line %d file %s", 
+					tid, BarrierCount, SegmentCount[tid], col, line, filename.c_str());
 
 					pStatus->state = 4;
 					// maintain all other information for future race detection.
@@ -2729,8 +2840,12 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 			case 4: // racy
 				if (MutexLocked[tid] == Locked) {
 					Logger.warn("[tid: %d] Locked read for previoulsy non-locked (on racy state): addr 0x%lx", tid, a);
-					Logger.warn("%s (alloc) offset %d(0x%lx)", 
-					MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
+					if (inGlobal)
+						Logger.warn("variable %s offset %d(0x%lx)", 
+						getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
+					else
+						Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
+						MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
 					Logger.warn("previously written by %d in epoch %d segment %d \n\tat location: col %d line %d file %s", 
 					pStatus->proc, pStatus->epoch, pStatus->segment, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
 					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
@@ -2739,7 +2854,7 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 					pStatus->proc = tid;
 					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
-					//pStatus->lock = MutexLock[tid];
+					pStatus->lock = MutexLock[tid];
 
 					pStatus->src.col = col;
 					pStatus->src.line = line;
@@ -2751,17 +2866,32 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 				break;
 
 			case 5: // locked
-				/*
+	
 				if (MutexLocked[tid] == Unlocked) {
-					Logger.warn("[tid: %d] Locked read for previoulsy non-locked (on locked state): addr 0x%lx", tid, a);
-					Logger.warn("%s (alloc) offset %d(0x%lx)", 
-					MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
-					Logger.warn("previously read/write by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
+					if (pStatus->epoch < BarrierCount) {
+						// no warning
+					}
+					//else if (Ordering.established(pStatus->segment, SegmentCount[tid]) > -1)
+					else if (prevSeg >= pStatus->segment) {
+						// segment ordering
+					}
+					// temporarily commented
+					else {
+						Logger.warn("[tid: %d] Unlocked read for previoulsy locked (on locked state): addr 0x%lx", tid, a);
+						if (inGlobal)
+							Logger.warn("variable %s offset %d(0x%lx)", 
+							getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
+						else
+							Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
+							MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
+						Logger.warn("previously locked by %d in location: col %d line %d file %s", 
+						pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+						Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
+					}
 		
 					pStatus->state = 1;
 					pStatus->proc = tid;
+					pStatus->epoch = BarrierCount;
 					pStatus->segment = SegmentCount[tid];
 					pStatus->lock = MutexLock[tid];
 
@@ -2770,13 +2900,12 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 					pStatus->src.filename = filename;
 					break;
 				}
-				*/
 
 				/*
 				if (MutexLock[tid] != pStatus->lock) {
-					Logger.warn("[tid: %d] Locked read for previoulsy non-locked (on locked state): addr 0x%lx", tid, a);
+					Logger.warn("[tid: %d] Locked read for previoulsy non-locked (on shared rd state): addr 0x%lx", tid, a);
 					Logger.warn("%s (alloc) offset %d(0x%lx)", 
-					MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
+					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
 					Logger.warn("previously read by %d in location: col %d line %d file %s", 
 					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
 					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
@@ -2793,19 +2922,16 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 				}
 				*/
 
-				// [FIXME]
-				/*
 				pStatus->state = 5;
 				pStatus->proc = tid;
+				pStatus->epoch = BarrierCount;
 				pStatus->segment = SegmentCount[tid];
-				//pStatus->lock = MutexLock[tid];
+				pStatus->lock = MutexLock[tid];
 
 				pStatus->src.col = col;
 				pStatus->src.line = line;
 				pStatus->src.filename = filename;
-				*/
 				break;
-
 			}
 
 
@@ -2825,273 +2951,6 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 				// means currently invalid state
 				Logger.temp("read at unloaded state");
 				(* (MATracker.bitVector(a)) )[tid*2+1] = 1;	// changed to read valid state
-			}
-			*/
-		}
-	}
-	// else if read is from global memory
-	else if (isGlobalVariable(memoryAddressRead)) {
-		// File trace is disabled for now.
-		//fprintf(Trace, "[tid: %d] %d Read address = 0x%lx\n", tid, BarrierCount, memoryAddressRead);
-		//fflush(Trace);
-		NumReads[tid].count++;
-		//ReleaseLock(&Lock);
-
-		if (MutexLocked[tid] == Locked)
-			Logger.temp("[tid: %d] epoch: %d Locked / Read address = 0x%lx", tid, BarrierCount, memoryAddressRead);
-		else
-			Logger.temp("[tid: %d] epoch: %d Read address = 0x%lx", tid, BarrierCount, memoryAddressRead);
-
-
-		startWordAddress = memoryAddressRead & ADDR_MASK;
-		//endWordAddress = (memoryAddressRead + memoryReadSize) & ADDR_MASK;
-		//startOffset = memoryAddressRead & offsetMask;
-
-		for (ADDRINT a = startWordAddress; a < memoryAddressRead + memoryReadSize; a += WORD_BYTES)
-		{
-			struct WordStatus *pStatus;
-			pStatus = wordStatusForGlobalVariable(a);
-			int prevSeg = Ordering.established(pStatus->proc, tid);
-
-			switch (pStatus->state) {
-			case 0: // virgin
-				//if (MutexLocked[tid] == Locked)
-				//	pStatus->state = 5;
-				//else
-					pStatus->state = 1;
-				pStatus->proc = tid;
-				pStatus->epoch = BarrierCount;
-				pStatus->segment = SegmentCount[tid];
-				//pStatus->lock = MutexLock[tid];
-
-				pStatus->src.col = col;
-				pStatus->src.line = line;
-				pStatus->src.filename = filename;
-				break;
-
-			case 1: // read
-				/*
-				if (MutexLocked[tid] == Locked) {
-					Logger.warn("[tid: %d] Locked read for previoulsy non-locked (on rd state): addr 0x%lx", tid, a);
-					Logger.warn("%s (alloc) offset %d(0x%lx)", 
-					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
-					Logger.warn("previously read by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
-		
-					pStatus->state = 5;
-					pStatus->proc = tid;
-					pStatus->segment = SegmentCount[tid];
-					pStatus->lock = MutexLock[tid];
-
-					pStatus->src.col = col;
-					pStatus->src.line = line;
-					pStatus->src.filename = filename;
-					break;
-				}
-				*/
-
-				if (tid != pStatus->proc) {
-					if (prevSeg >= pStatus->segment) {
-						pStatus->state = 1;	// stay because there is ordering between prev read and current read.
-					}
-					else
-						pStatus->state = 3;	// no ordering
-					pStatus->proc = tid;
-				}
-
-				// if tid is the same, stay at the same state.
-				pStatus->epoch = BarrierCount;
-				pStatus->segment = SegmentCount[tid];
-				//pStatus->lock = MutexLock[tid];	
-
-				pStatus->src.col = col;
-				pStatus->src.line = line;
-				pStatus->src.filename = filename;
-				break;
-
-			case 2: // write
-				if (MutexLocked[tid] == Locked) {
-					// temporarily commented
-					// [FIXME]
-					/*
-					Logger.warn("[tid: %d] Locked read for previoulsy non-locked (on wr state): addr 0x%lx", tid, a);
-					Logger.warn("%s (alloc) offset %d(0x%lx)", 
-					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
-					Logger.warn("previously written by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
-					*/
-		
-					/*
-					pStatus->state = 5;
-					pStatus->proc = tid;
-					pStatus->segment = SegmentCount[tid];
-					//pStatus->lock = MutexLock[tid];
-
-					pStatus->src.col = col;
-					pStatus->src.line = line;
-					pStatus->src.filename = filename;
-					*/
-					break;
-				}
-
-				if (tid != pStatus->proc) {
-					if (prevSeg >= pStatus->segment)
-						// ordering.
-						// but stay at write state with previous info.
-						// maintain 'write' col, line, filename for future use.
-						break;
-					// [FIXME] this has problems.
-
-					// no ordering, thus a data race.
-					Logger.warn("[tid: %d] going to racy due to unlocked read (on wr state): addr 0x%lx", tid, a);
-					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
-					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
-					Logger.warn("previously written by %d in epoch %d segment %d \n\tat location: col %d line %d file %s", 
-					pStatus->proc, pStatus->epoch, pStatus->segment, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
-
-					pStatus->state = 4;
-					// maintain all other information for future race detection.
-					// proc, segment, lock, src
-				}
-
-				// if read by the written thread,
-				// stay at the same state, and no information is updated.
-				break;
-			
-			case 3: // shared read
-				/*
-				if (MutexLocked[tid] == Locked) {
-					Logger.warn("[tid: %d] Locked read for previoulsy non-locked (on shared rd state): addr 0x%lx", tid, a);
-					Logger.warn("%s (alloc) offset %d(0x%lx)", 
-					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
-					Logger.warn("previously read by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
-		
-					pStatus->state = 5;
-					pStatus->proc = tid;
-					pStatus->segment = SegmentCount[tid];
-					pStatus->lock = MutexLock[tid];
-
-					pStatus->src.col = col;
-					pStatus->src.line = line;
-					pStatus->src.filename = filename;
-					break;
-				}
-				*/
-
-				pStatus->proc = tid;
-				//pStatus->lock = MutexLock[tid];
-				pStatus->epoch = BarrierCount;
-				pStatus->segment = SegmentCount[tid];
-
-				pStatus->src.col = col;
-				pStatus->src.line = line;
-				pStatus->src.filename = filename;
-				break;
-
-			case 4: // racy
-				if (MutexLocked[tid] == Locked) {
-					Logger.warn("[tid: %d] Locked read for previoulsy non-locked (on racy state): addr 0x%lx", tid, a);
-					Logger.warn("%s (alloc) offset %d(0x%lx)", 
-					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
-					Logger.warn("previously written by %d in epoch %d segment %d \n\tat location: col %d line %d file %s", 
-					pStatus->proc, pStatus->epoch, pStatus->segment, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
-
-					pStatus->state = 5;
-					pStatus->proc = tid;
-					pStatus->epoch = BarrierCount;
-					pStatus->segment = SegmentCount[tid];
-					//pStatus->lock = MutexLock[tid];
-
-					pStatus->src.col = col;
-					pStatus->src.line = line;
-					pStatus->src.filename = filename;
-					break;
-				}
-
-				// otherwise, once entered into racy state, it does not exit.
-				break;
-
-			case 5: // locked
-				/*
-				if (MutexLocked[tid] == Unlocked) {
-					Logger.warn("[tid: %d] Locked read for previoulsy non-locked (on shared rd state): addr 0x%lx", tid, a);
-					Logger.warn("%s (alloc) offset %d(0x%lx)", 
-					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
-					Logger.warn("previously read by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
-		
-					pStatus->state = 1;
-					pStatus->proc = tid;
-					pStatus->segment = SegmentCount[tid];
-					pStatus->lock = MutexLock[tid];
-
-					pStatus->src.col = col;
-					pStatus->src.line = line;
-					pStatus->src.filename = filename;
-					break;
-				}
-				*/
-
-				/*
-				if (MutexLock[tid] != pStatus->lock) {
-					Logger.warn("[tid: %d] Locked read for previoulsy non-locked (on shared rd state): addr 0x%lx", tid, a);
-					Logger.warn("%s (alloc) offset %d(0x%lx)", 
-					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
-					Logger.warn("previously read by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
-		
-					pStatus->state = 5;
-					pStatus->proc = tid;
-					pStatus->segment = SegmentCount[tid];
-					pStatus->lock = MutexLock[tid];
-
-					pStatus->src.col = col;
-					pStatus->src.line = line;
-					pStatus->src.filename = filename;
-					break;
-				}
-				*/
-
-				/*
-				pStatus->state = 5;
-				pStatus->proc = tid;
-				pStatus->segment = SegmentCount[tid];
-				//pStatus->lock = MutexLock[tid];
-
-				pStatus->src.col = col;
-				pStatus->src.line = line;
-				pStatus->src.filename = filename;
-				*/
-				break;
-
-
-			}
-
-			//ReadWordsInThisEpoch[tid].insert(a);
-
-			/*
-			We are now not interested in coherent states.
-
-			//	Logger.warn("[tid: %d] read : %s, %lx", tid, getGlobalVariableName(a), a);
-			// invalidation test
-			if ( (* (bitVectorForGlobalVariable(a)) )[tid*2] == 1) {
-				if ( (* (bitVectorForGlobalVariable(a)) )[tid*2+1] == 1) {
-					// means 'need invalidation'
-					Logger.error("[tid: %d] read without invalidation: addr=0x%lx, %s (offset: %ld 0x%lx)", tid, a, getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
-				}
-			}
-			else if ( (* (bitVectorForGlobalVariable(a)) )[tid*2+1] == 0) {
-				// means currently invalid state
-				Logger.temp("read at unloaded state");
-				(* (bitVectorForGlobalVariable(a)) )[tid*2+1] = 1;	// change to read valid state
 			}
 			*/
 		}	// end for
@@ -3127,24 +2986,34 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 
 
 	GetLock(&Lock, tid+1);
-	// For memory-allocated address, written words should be recorded.
-	if (MATracker.contain(memoryAddressWrite)) {
-		// File trace is disabled for now.
+	bool	inAlloc = MATracker.contain(memoryAddressWrite);
+	bool	inGlobal = isGlobalVariable(memoryAddressWrite);
+
+	if (inAlloc || inGlobal) {
 		//GetLock(&Lock, tid+1);
 		//fprintf(Trace, "[tid: %d] %d Write address = 0x%lx\n", tid, BarrierCount, memoryAddressWrite);
 		//fflush(Trace);
 		NumWrites[tid].count++;
 		//ReleaseLock(&Lock);
 
-		Logger.temp("[tid: %d] epoch: %d Write address = 0x%lx",
-			tid, BarrierCount, memoryAddressWrite);
-
-		if (MutexLocked[tid] == Locked)
-			Logger.temp("[tid: %d] epoch: %d Locked / Write address = 0x%lx to %s",
-				tid, BarrierCount, memoryAddressWrite, MATracker.getVariableName(memoryAddressWrite).c_str());
-		else
-			Logger.temp("[tid: %d] epoch: %d Write address = 0x%lx to %s",
-				tid, BarrierCount, memoryAddressWrite, MATracker.getVariableName(memoryAddressWrite).c_str());
+		if (MutexLocked[tid] == Locked) {
+			Logger.temp("[tid: %d] epoch: %d Locked / Write address = 0x%lx", tid, BarrierCount, memoryAddressWrite);
+			//if (inGlobal)
+			//Logger.log("[tid: %d] epoch: %d Locked / Write address = 0x%lx to %s (alloc)",
+			//	tid, BarrierCount, memoryAddressWrite, MATracker.getVariableName(memoryAddressWrite).c_str());
+			//else
+			//Logger.log("[tid: %d] epoch: %d Locked / Write address = 0x%lx to %s",
+			//	tid, BarrierCount, memoryAddressWrite, getGlobalVariableName(memoryAddressWrite));
+		}
+		else {
+			Logger.temp("[tid: %d] epoch: %d Write address = 0x%lx", tid, BarrierCount, memoryAddressWrite);
+			//if (inGlobal)
+			//Logger.log("[tid: %d] epoch:%d Write address = 0x%lx to %s",
+			//	tid, BarrierCount, memoryAddressWrite, getGlobalVariableName(memoryAddressWrite));
+			//else
+			//Logger.log("[tid: %d] epoch: %d Write address = 0x%lx to %s (alloc)",
+			//	tid, BarrierCount, memoryAddressWrite, MATracker.getVariableName(memoryAddressWrite).c_str());
+		}
 
 		startWordAddress = memoryAddressWrite & ADDR_MASK;
 		//endWordAddress = (memoryAddressWrite + memoryWriteSize) & ADDR_MASK;
@@ -3153,8 +3022,15 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 		for (ADDRINT a = startWordAddress; a < memoryAddressWrite + memoryWriteSize; a += WORD_SIZE)
 		{
 			struct WordStatus *pStatus;
-			pStatus = MATracker.wordStatus(a);
-			int prevSeg = Ordering.established(pStatus->proc, tid);
+			if (inGlobal)
+				pStatus = wordStatusForGlobalVariable(a);
+			else
+				pStatus = MATracker.wordStatus(a);
+			Logger.log("[tid: %d] before Ordering.established in write", tid);
+			int prevSeg = -1;
+			if (pStatus->proc != 9999)
+				prevSeg = Ordering.established(pStatus->proc, tid);
+			Logger.log("[tid: %d] after Ordering.established in write", tid);
 
 			switch (pStatus->state) {
 			case 0: // virgin
@@ -3174,15 +3050,27 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 
 			case 1: // read
 				if (MutexLocked[tid] == Locked) {
-					/*
-					Logger.warn("[tid: %d] Locked write for previoulsy non-locked (on rd state): addr 0x%lx", tid, a);
-					Logger.warn("%s (alloc) offset %d(0x%lx)", 
-					MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
-					Logger.warn("previously write by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
-					*/
-
+					if (pStatus->epoch < BarrierCount) {
+						// no warning
+						// because of epoch ordering
+					}
+					else if (prevSeg >= pStatus->segment) {
+						// no warning
+						// because of segment ordering
+					}
+					else {
+						Logger.warn("[tid: %d] Locked write for previoulsy non-locked (on rd state): addr 0x%lx", tid, a);
+						if (inGlobal)
+							Logger.warn("variable %s offset %d(0x%lx)", 
+							getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
+						else
+							Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
+							MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
+						Logger.warn("previously read by tid %d in location: col %d line %d file %s", 
+						pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+						Logger.warn("written by tid %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
+					}
+		
 					pStatus->state = 5;
 					pStatus->proc = tid;
 					pStatus->epoch = BarrierCount;
@@ -3196,10 +3084,27 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 				}
 
 				if (tid != pStatus->proc) {
-					if (prevSeg >= pStatus->segment)
+					if (pStatus->epoch < BarrierCount) {
+						pStatus->state = 1;	// stay
+					}
+					else if (prevSeg >= pStatus->segment) {
 						pStatus->state = 2;	// go to write state because there is ordering between prev read and current write.
-					else
+					}
+					else {
 						pStatus->state = 4;	// no ordering, so racy
+
+						Logger.warn("[tid: %d] going to racy due to unlocked write (on rdr state): addr 0x%lx", tid, a);
+						if (inGlobal)
+							Logger.warn("variable %s offset %d(0x%lx)", 
+							getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
+						else
+							Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
+							MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
+						Logger.warn("previously read by %d in epoch %d segment %d \n\tat location: col %d line %d file %s", 
+						pStatus->proc, pStatus->epoch, pStatus->segment, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+						Logger.warn("written by %d in epoch %d segment %d \n\tat location: col %d line %d file %s", 
+						tid, BarrierCount, SegmentCount[tid], col, line, filename.c_str());
+					}
 					pStatus->proc = tid;
 				}
 				else {
@@ -3215,24 +3120,28 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 				pStatus->src.filename = filename;
 				break;
 
+
 			case 2: // write
 				if (MutexLocked[tid] == Locked) {
-					if ((tid == 0) && (BarrierCount == 0)) {
-						// if this occurs during master thread's initialization,
-						// we do not raise an error.
+					if (pStatus->epoch < BarrierCount) {
+						// no warning
 					}
-					else if (tid == pStatus->proc) {
-						// if the same processor, we do not handle this case as an error.
+					else if (prevSeg >= pStatus->segment) {
+						// segment ordering
 					}
 					else {
-					Logger.warn("[tid: %d] Locked write for previoulsy non-locked (on wr state): addr 0x%lx", tid, a);
-					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
-					MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
-					Logger.warn("previously written by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("write by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
+						Logger.warn("[tid: %d] Locked write for previoulsy non-locked (on wr state): addr 0x%lx", tid, a);
+						if (inGlobal)
+							Logger.warn("variable %s offset %d(0x%lx)", 
+							getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
+						else
+							Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
+							MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
+						Logger.warn("previously written by %d in location: col %d line %d file %s", 
+						pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+						Logger.warn("written by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
 					}
-	
+		
 					pStatus->state = 5;
 					pStatus->proc = tid;
 					pStatus->epoch = BarrierCount;
@@ -3246,6 +3155,18 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 				}
 
 				if (tid != pStatus->proc) {
+					if (pStatus->epoch < BarrierCount) {
+						// ordering.
+						pStatus->proc = tid;
+						pStatus->epoch = BarrierCount;
+						pStatus->segment = SegmentCount[tid];
+						pStatus->lock = MutexLock[tid];
+
+						pStatus->src.col = col;
+						pStatus->src.line = line;
+						pStatus->src.filename = filename;
+						break;
+					}
 					if (prevSeg >= pStatus->segment) {
 						// ordering.
 						pStatus->proc = tid;
@@ -3261,8 +3182,12 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 
 					// no ordering, thus a data race.
 					Logger.warn("[tid: %d] going to racy due to unlocked write (on wr state): addr 0x%lx", tid, a);
-					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
-					MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
+					if (inGlobal)
+						Logger.warn("variable %s offset %d(0x%lx)", 
+						getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
+					else
+						Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
+						MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
 					Logger.warn("previously written by %d in location: col %d line %d file %s", 
 					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
 					Logger.warn("write by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
@@ -3276,27 +3201,43 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 					pStatus->src.col = col;
 					pStatus->src.line = line;
 					pStatus->src.filename = filename;
+					break;
+				}
+				else {
+					// if tid is the same,
+					pStatus->epoch = BarrierCount;
+					pStatus->segment = SegmentCount[tid];
+					pStatus->lock = MutexLock[tid];
+
+					pStatus->src.col = col;
+					pStatus->src.line = line;
+					pStatus->src.filename = filename;
+					break;
 				}
 
-				// if tid is the same,
-				pStatus->proc = tid;
-				pStatus->epoch = BarrierCount;
-				pStatus->segment = SegmentCount[tid];
-				pStatus->lock = MutexLock[tid];
-
-				pStatus->src.col = col;
-				pStatus->src.line = line;
-				pStatus->src.filename = filename;
-				break;
 			
 			case 3: // shared read
 				if (MutexLocked[tid] == Locked) {
-					Logger.warn("[tid: %d] Locked write for previoulsy non-locked (on shared rd state): addr 0x%lx", tid, a);
-					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
-					MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
-					Logger.warn("previously read by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("write by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
+					if (pStatus->epoch < BarrierCount) {
+						// no warning
+					}
+					//else if (Ordering.established(pStatus->segment, SegmentCount[tid]) > -1)
+					else if (prevSeg >= pStatus->segment) {
+						// segment ordering
+					}
+					else {
+						Logger.warn("[tid: %d] Locked write for previoulsy non-locked (on shared rd state): addr 0x%lx", tid, a);
+						if (inGlobal) 
+							Logger.warn("variable %s offset %d(0x%lx)", 
+							getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
+						else
+							Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
+							MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
+						Logger.warn("previously read by %d in epoch %d, segment %d\n\tat location: col %d line %d file %s", 
+						pStatus->proc, pStatus->epoch, pStatus->segment, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+						Logger.warn("write by %d in epoch %d, segment %d\n\tat location: col %d line %d file %s", 
+						tid, BarrierCount, SegmentCount[tid], col, line, filename.c_str());
+					}
 		
 					pStatus->state = 5;
 					pStatus->proc = tid;
@@ -3312,7 +3253,20 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 
 
 				if (tid != pStatus->proc) {
-					if (prevSeg >= pStatus->segment) {
+					if (pStatus->epoch < BarrierCount) {
+						// no warning
+						pStatus->state = 2;
+						pStatus->proc = tid;
+						pStatus->epoch = BarrierCount;
+						pStatus->segment = SegmentCount[tid];
+						pStatus->lock = MutexLock[tid];
+				
+						pStatus->src.col = col;
+						pStatus->src.line = line;
+						pStatus->src.filename = filename;
+						break;
+					}
+					else if (prevSeg >= pStatus->segment) {
 						pStatus->state = 2;
 						pStatus->proc = tid;
 						pStatus->epoch = BarrierCount;
@@ -3325,309 +3279,17 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 						break;
 					}
 
-					pStatus->state = 4;
-					pStatus->proc = tid;
-					pStatus->epoch = BarrierCount;
-					pStatus->segment = SegmentCount[tid];
-					pStatus->lock = MutexLock[tid];
-				
-					pStatus->src.col = col;
-					pStatus->src.line = line;
-					pStatus->src.filename = filename;
-				}
-				else {
-					pStatus->state = 2;
-					pStatus->proc = tid;
-					pStatus->epoch = BarrierCount;
-					pStatus->segment = SegmentCount[tid];
-					pStatus->lock = MutexLock[tid];
-				
-					pStatus->src.col = col;
-					pStatus->src.line = line;
-					pStatus->src.filename = filename;
-				}
-				break;
-
-			case 4: // racy
-				if (MutexLocked[tid] == Locked) {
-					Logger.warn("[tid: %d] Locked write for previoulsy non-locked (on racy state): addr 0x%lx", tid, a);
-					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
-					MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
-					Logger.warn("previously written by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("write by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
-
-					pStatus->state = 5;
-					pStatus->proc = tid;
-					pStatus->epoch = BarrierCount;
-					pStatus->segment = SegmentCount[tid];
-					pStatus->lock = MutexLock[tid];
-
-					pStatus->src.col = col;
-					pStatus->src.line = line;
-					pStatus->src.filename = filename;
-					break;
-				}
-
-				// otherwise, once entered into racy state, it does not exit.
-				break;
-
-			case 5: // locked
-				if (MutexLocked[tid] == Unlocked) {
-					if (tid == pStatus->proc) {
-						// if the same processor, we do not handle this case as an error.
-					}
-					else {
-					Logger.warn("[tid: %d] Unlocked write for previoulsy locked (on locked state): addr 0x%lx", tid, a);
-					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
-					MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
-					Logger.warn("previously read/write by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("write by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
-					}
-
-
-					pStatus->state = 1;
-					pStatus->proc = tid;
-					pStatus->epoch = BarrierCount;
-					pStatus->segment = SegmentCount[tid];
-					pStatus->lock = MutexLock[tid];
-
-					pStatus->src.col = col;
-					pStatus->src.line = line;
-					pStatus->src.filename = filename;
-					break;
-				}
-
-				if (MutexLock[tid] != pStatus->lock) {
-					Logger.warn("[tid: %d] Locked write but different lock (on locked state): addr 0x%lx", tid, a);
-					Logger.warn("previous= 0x%lx, now= 0x%lx", pStatus->lock, MutexLock[tid]);
-					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
-					MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
-					Logger.warn("previously read/write by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("write by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
-		
-					pStatus->state = 5;
-					pStatus->proc = tid;
-					pStatus->epoch = BarrierCount;
-					pStatus->segment = SegmentCount[tid];
-					pStatus->lock = MutexLock[tid];
-
-					pStatus->src.col = col;
-					pStatus->src.line = line;
-					pStatus->src.filename = filename;
-					break;
-				}
-
-				pStatus->state = 5;
-				pStatus->proc = tid;
-				pStatus->epoch = BarrierCount;
-				pStatus->segment = SegmentCount[tid];
-				pStatus->lock = MutexLock[tid];
-
-				pStatus->src.col = col;
-				pStatus->src.line = line;
-				pStatus->src.filename = filename;
-				break;
-
-			}
-
-		}
-
-	}
-	// For general global memory variables, written words should be recorded.
-	else if (isGlobalVariable(memoryAddressWrite)) {
-		// File trace is disabled for now.
-		//GetLock(&Lock, tid+1);
-		//fprintf(Trace, "[tid: %d] %d Write address = 0x%lx\n", tid, BarrierCount, memoryAddressWrite);
-		//fflush(Trace);
-		NumWrites[tid].count++;
-		//ReleaseLock(&Lock);
-
-		if (MutexLocked[tid] == Locked)
-			Logger.temp("[tid: %d] epoch: %d Locked / Write address = 0x%lx to %s",
-				tid, BarrierCount, memoryAddressWrite, getGlobalVariableName(memoryAddressWrite));
-		else
-			Logger.temp("[tid: %d] epoch:%d Write address = 0x%lx to %s",
-				tid, BarrierCount, memoryAddressWrite, getGlobalVariableName(memoryAddressWrite));
-
-		startWordAddress = memoryAddressWrite & ADDR_MASK;
-		//endWordAddress = (memoryAddressWrite + memoryWriteSize) & ADDR_MASK;
-		//startOffset = memoryAddressWrite & offsetMask;
-
-		for (ADDRINT a = startWordAddress; a < memoryAddressWrite + memoryWriteSize; a += WORD_SIZE)
-		{
-			struct WordStatus *pStatus;
-			pStatus = wordStatusForGlobalVariable(a);
-			int prevSeg = Ordering.established(pStatus->proc, tid);
-
-			switch ((wordStatusForGlobalVariable(a))->state) {
-			case 0: // virgin
-				if (MutexLocked[tid] == Locked)
-					pStatus->state = 5;
-				else
-					pStatus->state = 2;
-				pStatus->proc = tid;
-				pStatus->epoch = BarrierCount;
-				pStatus->segment = SegmentCount[tid];
-				pStatus->lock = MutexLock[tid];
-
-				pStatus->src.col = col;
-				pStatus->src.line = line;
-				pStatus->src.filename = filename;
-				break;
-
-			case 1: // read
-				if (MutexLocked[tid] == Locked) {
-					Logger.warn("[tid: %d] Locked write for previoulsy non-locked (on rd state): addr 0x%lx", tid, a);
-					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
-					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
-					Logger.warn("previously write by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
-		
-					pStatus->state = 5;
-					pStatus->proc = tid;
-					pStatus->epoch = BarrierCount;
-					pStatus->segment = SegmentCount[tid];
-					pStatus->lock = MutexLock[tid];
-
-					pStatus->src.col = col;
-					pStatus->src.line = line;
-					pStatus->src.filename = filename;
-					break;
-				}
-
-				if (tid != pStatus->proc) {
-					if (prevSeg >= pStatus->segment)
-						pStatus->state = 2;	// go to write state because there is ordering between prev read and current write.
+					Logger.warn("[tid: %d] going to racy due to Unlocked write (on shared rd state): addr 0x%lx", tid, a);
+					if (inGlobal)
+						Logger.warn("variable %s offset %d(0x%lx)", 
+						getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
 					else
-						pStatus->state = 4;	// no ordering, so racy
-					pStatus->proc = tid;
-				}
-				else {
-					pStatus->state = 2;		// if same tid, go to write state
-				}
-
-				pStatus->epoch = BarrierCount;
-				pStatus->segment = SegmentCount[tid];
-				pStatus->lock = MutexLock[tid];	
-
-				pStatus->src.col = col;
-				pStatus->src.line = line;
-				pStatus->src.filename = filename;
-				break;
-
-			case 2: // write
-				if (MutexLocked[tid] == Locked) {
-					/*if ((tid == 0) && (BarrierCount == 0)) {
-						// if this occurs during master thread's initialization,
-						// we do not raise an error.
-					}
-					else*/ if (tid == pStatus->proc) {
-						// if the same processor, we do not handle this case as an error.
-					}
-					else {
-					Logger.warn("[tid: %d] Locked write for previoulsy non-locked (on wr state): addr 0x%lx", tid, a);
-					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
-					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
-					Logger.warn("previously written by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("write by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
-					}
-		
-					pStatus->state = 5;
-					pStatus->proc = tid;
-					pStatus->epoch = BarrierCount;
-					pStatus->segment = SegmentCount[tid];
-					pStatus->lock = MutexLock[tid];
-
-					pStatus->src.col = col;
-					pStatus->src.line = line;
-					pStatus->src.filename = filename;
-					break;
-				}
-
-				if (tid != pStatus->proc) {
-					if (prevSeg >= pStatus->segment) {
-						// ordering.
-						pStatus->proc = tid;
-						pStatus->epoch = BarrierCount;
-						pStatus->segment = SegmentCount[tid];
-						pStatus->lock = MutexLock[tid];
-
-						pStatus->src.col = col;
-						pStatus->src.line = line;
-						pStatus->src.filename = filename;
-						break;
-					}
-
-					// no ordering, thus a data race.
-					Logger.warn("[tid: %d] going to racy due to unlocked write (on wr state): addr 0x%lx", tid, a);
-					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
-					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
-					Logger.warn("previously written by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("write by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
-
-					pStatus->state = 4;
-					pStatus->proc = tid;
-					pStatus->epoch = BarrierCount;
-					pStatus->segment = SegmentCount[tid];
-					pStatus->lock = MutexLock[tid];
-
-					pStatus->src.col = col;
-					pStatus->src.line = line;
-					pStatus->src.filename = filename;
-				}
-
-				// if tid is the same,
-				pStatus->proc = tid;
-				pStatus->epoch = BarrierCount;
-				pStatus->segment = SegmentCount[tid];
-				pStatus->lock = MutexLock[tid];
-
-				pStatus->src.col = col;
-				pStatus->src.line = line;
-				pStatus->src.filename = filename;
-				break;
-
-			case 3: // shared read
-				if (MutexLocked[tid] == Locked) {
-					Logger.warn("[tid: %d] Locked write for previoulsy non-locked (on shared rd state): addr 0x%lx", tid, a);
-					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
-					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
-					Logger.warn("previously read by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("write by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
-		
-					pStatus->state = 5;
-					pStatus->proc = tid;
-					pStatus->epoch = BarrierCount;
-					pStatus->segment = SegmentCount[tid];
-					pStatus->lock = MutexLock[tid];
-
-					pStatus->src.col = col;
-					pStatus->src.line = line;
-					pStatus->src.filename = filename;
-					break;
-				}
-
-
-				if (tid != pStatus->proc) {
-					if (prevSeg >= pStatus->segment) {
-						pStatus->state = 2;
-						pStatus->proc = tid;
-						pStatus->epoch = BarrierCount;
-						pStatus->segment = SegmentCount[tid];
-						pStatus->lock = MutexLock[tid];
-				
-						pStatus->src.col = col;
-						pStatus->src.line = line;
-						pStatus->src.filename = filename;
-						break;
-					}
+						Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
+						MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
+					Logger.warn("previously read by %d in epoch %d segment %d\n\tat location: col %d line %d file %s", 
+					pStatus->proc, pStatus->epoch, pStatus->segment, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+					Logger.warn("write by %d in epoch %d segment %d\n\tat location: col %d line %d file %s", 
+					tid, BarrierCount, SegmentCount[tid], col, line, filename.c_str());
 
 					pStatus->state = 4;
 					pStatus->proc = tid;
@@ -3652,11 +3314,16 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 				}
 				break;
 
+
 			case 4: // racy
 				if (MutexLocked[tid] == Locked) {
 					Logger.warn("[tid: %d] Locked write for previoulsy non-locked (on racy state): addr 0x%lx", tid, a);
-					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
-					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
+					if (inGlobal)
+						Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
+						getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
+					else
+						Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
+						MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
 					Logger.warn("previously written by %d in location: col %d line %d file %s", 
 					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
 					Logger.warn("write by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
@@ -3682,14 +3349,19 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 						// if the same processor, we do not handle this case as an error.
 					}
 					else {
-					Logger.warn("[tid: %d] Unlocked write for previoulsy locked (on locked state): addr 0x%lx", tid, a);
-					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
-					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
-					Logger.warn("previously read/write by %d in location: col %d line %d file %s", 
-					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-					Logger.warn("write by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
+						Logger.warn("[tid: %d] Unlocked write for previoulsy locked (on locked state): addr 0x%lx", tid, a);
+						if (inGlobal)
+							Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
+							getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
+						else
+							Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
+							MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
+						Logger.warn("previously read/write by %d in location: col %d line %d file %s", 
+						pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+						Logger.warn("write by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
 					}
-		
+
+
 					pStatus->state = 1;
 					pStatus->proc = tid;
 					pStatus->epoch = BarrierCount;
@@ -3705,8 +3377,12 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 				if (MutexLock[tid] != pStatus->lock) {
 					Logger.warn("[tid: %d] Locked write but different lock (on locked state): addr 0x%lx", tid, a);
 					Logger.warn("previous= 0x%lx, now= 0x%lx", pStatus->lock, MutexLock[tid]);
-					Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
-					getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
+					if (inGlobal)
+						Logger.warn("variable %s offset %d(0x%lx)", 
+						getGlobalVariableName(a), offsetInGlobalVariable(a), offsetInGlobalVariable(a));
+					else
+						Logger.warn("variable %s (alloc) offset %d(0x%lx)", 
+						MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
 					Logger.warn("previously read/write by %d in location: col %d line %d file %s", 
 					pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
 					Logger.warn("write by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
@@ -3733,7 +3409,9 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 				pStatus->src.line = line;
 				pStatus->src.filename = filename;
 				break;
+
 			}
+
 		}
 
 	}
