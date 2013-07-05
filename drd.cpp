@@ -31,7 +31,7 @@
 //	Configurable Parameters
 //-------------------------------------------------------------------
 
-#define __64BIT__
+//#define __64BIT__
 //	Maximum worker threads are set to 32.
 #define MAX_WORKER	8
 //	Maximum threads are maximum work threads + 1 to support master-workers execution model.
@@ -1889,6 +1889,18 @@ VOID ImageLoad(IMG img, VOID *v)
 			IARG_END);
 	}
 
+	rtn = RTN_FindByName(img, "_Z10malloc_pmcj");
+	if (RTN_Valid(rtn)) {
+		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
+						"malloc", PIN_PARG(int), PIN_PARG_END() );
+		RTN_ReplaceSignature(rtn, AFUNPTR(mallocWrapper), 
+			IARG_PROTOTYPE, proto,
+			IARG_CONST_CONTEXT,
+			IARG_ORIG_FUNCPTR,
+			IARG_THREAD_ID,
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 0, 
+			IARG_END);
+	}
 
 	rtn = RTN_FindByName(img, "calloc_pmc");
 	if (RTN_Valid(rtn)) {
@@ -1918,6 +1930,19 @@ VOID ImageLoad(IMG img, VOID *v)
 			IARG_END);
 	}
 
+	rtn = RTN_FindByName(img, "_Z10calloc_pmcjj");
+	if (RTN_Valid(rtn)) {
+		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
+						"calloc", PIN_PARG(int), PIN_PARG(int), PIN_PARG_END() );
+		RTN_ReplaceSignature(rtn, AFUNPTR(callocWrapper), 
+			IARG_PROTOTYPE, proto,
+			IARG_CONST_CONTEXT,
+			IARG_ORIG_FUNCPTR,
+			IARG_THREAD_ID,
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 0, 
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 1, 
+			IARG_END);
+	}
 
 	rtn = RTN_FindByName(img, "realloc_pmc");
 	if (RTN_Valid(rtn)) {
@@ -1947,6 +1972,19 @@ VOID ImageLoad(IMG img, VOID *v)
 			IARG_END);
 	}
 
+	rtn = RTN_FindByName(img, "_Z11realloc_pmcPvj");
+	if (RTN_Valid(rtn)) {
+		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
+						"realloc", PIN_PARG(VOID *), PIN_PARG(int), PIN_PARG_END() );
+		RTN_ReplaceSignature(rtn, AFUNPTR(reallocWrapper), 
+			IARG_PROTOTYPE, proto,
+			IARG_CONST_CONTEXT,
+			IARG_ORIG_FUNCPTR,
+			IARG_THREAD_ID,
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 0, 
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 1, 
+			IARG_END);
+	}
 
 	rtn = RTN_FindByName(img, "posix_memalign_pmc");
 	if (RTN_Valid(rtn)) {
@@ -1977,6 +2015,22 @@ VOID ImageLoad(IMG img, VOID *v)
 			IARG_FUNCARG_ENTRYPOINT_VALUE, 2, 
 			IARG_END);
 	}
+
+	rtn = RTN_FindByName(img, "_Z18posix_memalign_pmcPPVjj");
+	if (RTN_Valid(rtn)) {
+		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
+						"posix_memalign", PIN_PARG(VOID **), PIN_PARG(int), PIN_PARG(int), PIN_PARG_END() );
+		RTN_ReplaceSignature(rtn, AFUNPTR(reallocWrapper), 
+			IARG_PROTOTYPE, proto,
+			IARG_CONST_CONTEXT,
+			IARG_ORIG_FUNCPTR,
+			IARG_THREAD_ID,
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 0, 
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 1, 
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 2, 
+			IARG_END);
+	}
+
 
 	// more candidates: alloca, _alloca
 
@@ -2440,7 +2494,7 @@ void CheckBarrierResultBefore(THREADID tid)
 		MATracker.clear();
 		Ordering.clear();
 
-		Logger.log("*** Epoch %d ended ***\n\n", BarrierCount);
+		Logger.warn("*** Epoch %d ended ***\n\n", BarrierCount);
 		BarrierCount++;
 		CurrentBarrierArrival = 0;
 		for (int i = 0; i < MAX_THREADS; i++) 
@@ -2605,20 +2659,33 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 	if (MutexLocked[tid] == DuringLockFunc)
 		return;
 
+
 	// Source code tracing
 	INT32	col, line;
 	string	filename;
+	col = 0; line = 0; filename = "";
+	/*
 	PIN_LockClient();
 	PIN_GetSourceLocation(applicationIp, &col, &line, &filename);
 	PIN_UnlockClient();
+	*/
 
 	GetLock(&Lock, tid+1);
 
+/*
 	bool	inAlloc = MATracker.contain(memoryAddressRead);
 	bool	inGlobal = isGlobalVariable(memoryAddressRead);
+*/
+	bool 	inGlobal = isGlobalVariable(memoryAddressRead);
+	bool	inAlloc;
+	if (inGlobal)
+		inAlloc = false;
+	else
+		inAlloc = MATracker.contain(memoryAddressRead);
 
 
 	if (inAlloc || inGlobal) {
+		//Logger.log("malloc: %d global %d", inAlloc, inGlobal);
 		// File trace is disabled for now.
 		//fprintf(Trace, "[tid: %d] %d Read address = 0x%lx\n", tid, BarrierCount, memoryAddressRead);
 		//fflush(Trace);
@@ -2651,16 +2718,28 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 
 		for (ADDRINT a = startWordAddress; a < memoryAddressRead + memoryReadSize; a += WORD_BYTES)
 		{
+			Logger.log("[tid: %d] addr: 0x%lx", tid, a);
 			struct WordStatus *pStatus;
 			if (inGlobal)
 				pStatus = wordStatusForGlobalVariable(a);
 			else
 				pStatus = MATracker.wordStatus(a);
-			Logger.log("[tid: %d] before Ordering.established in read", tid);
+
+			// error handling for overflow
+			if (pStatus == NULL) {
+				Logger.error("[tid: %d] maybe overflow of memory area: 0x%lx, from 0x%lx", tid, a, startWordAddress);
+				continue;
+			}
+			//Logger.log("[tid: %d] before Ordering.established in read", tid);
 			int prevSeg = -1;
 			if (pStatus->proc != 9999)
 				prevSeg = Ordering.established(pStatus->proc, tid);
-			Logger.log("[tid: %d] after Ordering.established in read", tid);
+			//Logger.log("[tid: %d] after Ordering.established in read", tid);
+			//Logger.log("[tid: %d] state=%d", tid, pStatus->state);
+			//Logger.log("[tid: %d] proc=%d", tid, pStatus->proc);
+			//Logger.log("[tid: %d] epoch=%d", tid, pStatus->epoch);
+			//Logger.log("[tid: %d] segment=%d", tid, pStatus->segment);
+			//Logger.log("[tid: %d] lock=%d", tid, pStatus->lock);
 
 			switch (pStatus->state) {
 			case 0: // virgin
@@ -2964,6 +3043,7 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 	ADDRINT startWordAddress;
 	//, endWordAddress, startOffset;
 	//ADDRINT offsetMask = 0x3;
+	return ;
 
 	// Before main running, we do not track read/write access.
 	if (!MainRunning)
@@ -2990,11 +3070,13 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 	bool	inGlobal = isGlobalVariable(memoryAddressWrite);
 
 	if (inAlloc || inGlobal) {
+
 		//GetLock(&Lock, tid+1);
 		//fprintf(Trace, "[tid: %d] %d Write address = 0x%lx\n", tid, BarrierCount, memoryAddressWrite);
 		//fflush(Trace);
 		NumWrites[tid].count++;
 		//ReleaseLock(&Lock);
+	return;
 
 		if (MutexLocked[tid] == Locked) {
 			Logger.temp("[tid: %d] epoch: %d Locked / Write address = 0x%lx", tid, BarrierCount, memoryAddressWrite);
@@ -3423,15 +3505,15 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
 		// Currently checking if this instruction is for malloc statement is ugly.
 		// [TODO] Find the better way without string comparison
 		// printf("%s\n", DisAssemblyMap[applicationIp].c_str());
-        char instr[100];
-		int  len;
+		char instr[100];
 		strcpy(instr, DisAssemblyMap[applicationIp].c_str());
-		len = strlen(instr);
 		#ifdef __64BIT__
 		if (strstr(DisAssemblyMap[applicationIp].c_str(), "rax")) {
 		#else
 		//if (strstr(DisAssemblyMap[applicationIp].c_str(), "eax")) {
 		//if (strstr(instr, "eax")) {
+		int  len;
+		len = strlen(instr);
 		if ((instr[len-3] == 'e') && (instr[len-2] == 'a') && (instr[len-1] == 'x')) {
 		#endif
 			Logger.log("[tid: %d] afterAlloc %s", tid, instr);
