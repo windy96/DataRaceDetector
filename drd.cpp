@@ -394,6 +394,12 @@ public:
 		prevSize[tid] = size;
 
 		Logger.log("MAlloc tracker adds addr 0x%lx with size 0x%x.", addr, size);
+		int sum = 0;
+		int i;
+		for (i = 0; i < wordSize / WORD_SIZE; i++)
+			sum += (stateMap[addr]) [i].state;
+		Logger.log("verify: sum=%d i=%d", sum, i);
+			
 	}
 
 	void remove(ADDRINT addr) 
@@ -503,6 +509,7 @@ public:
 			return NULL;
 		}
 
+		//Logger.log("wordStatus: match found for 0x%lx: 0x%lx - 0x%lx: %d th entry", addr, startAddr, endAddr, (addr-startAddr)/WORD_SIZE);
 		return &( ( (stateMap[startAddr]) )[(addr - startAddr) / WORD_SIZE] );
 	}
 
@@ -1217,6 +1224,7 @@ VOID* callocWrapper(CONTEXT *ctxt, AFUNPTR orig_function, THREADID tid, int nmeb
 	VOID *ret;
 
 	Logger.warn("[tid: %d] calloc is called with nmeb %d and size %d, but wrapper function for calloc is not verified yet.", tid, nmeb, size);
+	// calloc writes values, so write to this memory area should be added.
 
 	PIN_CallApplicationFunction(ctxt, PIN_ThreadId(),
 		CALLINGSTD_DEFAULT, orig_function,
@@ -2053,7 +2061,7 @@ VOID ImageLoad(IMG img, VOID *v)
 	rtn = RTN_FindByName(img, "posix_memalign_pmc");
 	if (RTN_Valid(rtn)) {
 		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
-						"posix_memalign", PIN_PARG(VOID *), PIN_PARG(int), PIN_PARG_END() );
+						"posix_memalign", PIN_PARG(VOID **), PIN_PARG(int), PIN_PARG(int), PIN_PARG_END() );
 		RTN_ReplaceSignature(rtn, AFUNPTR(reallocWrapper), 
 			IARG_PROTOTYPE, proto,
 			IARG_CONST_CONTEXT,
@@ -2061,13 +2069,14 @@ VOID ImageLoad(IMG img, VOID *v)
 			IARG_THREAD_ID,
 			IARG_FUNCARG_ENTRYPOINT_VALUE, 0, 
 			IARG_FUNCARG_ENTRYPOINT_VALUE, 1, 
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 2, 
 			IARG_END);
 	}
 
-	rtn = RTN_FindByName(img, "_Z18posix_memalign_pmcPPvmm");
+	rtn = RTN_FindByName(img, "_Z18posix_memalign_pmcPPVmm");
 	if (RTN_Valid(rtn)) {
 		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
-						"posix_memalign", PIN_PARG(VOID *), PIN_PARG(int), PIN_PARG_END() );
+						"posix_memalign", PIN_PARG(VOID **), PIN_PARG(int), PIN_PARG(int), PIN_PARG_END() );
 		RTN_ReplaceSignature(rtn, AFUNPTR(reallocWrapper), 
 			IARG_PROTOTYPE, proto,
 			IARG_CONST_CONTEXT,
@@ -2075,13 +2084,14 @@ VOID ImageLoad(IMG img, VOID *v)
 			IARG_THREAD_ID,
 			IARG_FUNCARG_ENTRYPOINT_VALUE, 0, 
 			IARG_FUNCARG_ENTRYPOINT_VALUE, 1, 
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 2, 
 			IARG_END);
 	}
 
 	rtn = RTN_FindByName(img, "_Z18posix_memalign_pmcPPVjj");
 	if (RTN_Valid(rtn)) {
 		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
-						"posix_memalign", PIN_PARG(VOID *), PIN_PARG(int), PIN_PARG_END() );
+						"posix_memalign", PIN_PARG(VOID **), PIN_PARG(int), PIN_PARG(int), PIN_PARG_END() );
 		RTN_ReplaceSignature(rtn, AFUNPTR(reallocWrapper), 
 			IARG_PROTOTYPE, proto,
 			IARG_CONST_CONTEXT,
@@ -2089,6 +2099,7 @@ VOID ImageLoad(IMG img, VOID *v)
 			IARG_THREAD_ID,
 			IARG_FUNCARG_ENTRYPOINT_VALUE, 0, 
 			IARG_FUNCARG_ENTRYPOINT_VALUE, 1, 
+			IARG_FUNCARG_ENTRYPOINT_VALUE, 2, 
 			IARG_END);
 	}
 
@@ -2281,7 +2292,6 @@ VOID ImageLoad(IMG img, VOID *v)
 				//IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
 				IARG_END);
 		}
-
 
 		// pthread_cond_wait_null
 		rtn = RTN_FindByName(img, "_Z22pthread_cond_wait_nullPvS_");
@@ -2556,7 +2566,7 @@ void CheckBarrierResultBefore(THREADID tid)
 		MATracker.clear();
 		Ordering.clear();
 
-		Logger.log("*** Epoch %d ended ***\n\n", BarrierCount);
+		Logger.warn("*** Epoch %d ended ***\n\n", BarrierCount);
 		BarrierCount++;
 		CurrentBarrierArrival = 0;
 		for (int i = 0; i < MAX_THREADS; i++) 
@@ -2731,7 +2741,13 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 	PIN_GetSourceLocation(applicationIp, &col, &line, &filename);
 	PIN_UnlockClient();
 
+	GetLock(&Lock, tid+1);
+
+/*
+	bool	inAlloc = MATracker.contain(memoryAddressRead);
 	bool	inGlobal = isGlobalVariable(memoryAddressRead);
+*/
+	bool 	inGlobal = isGlobalVariable(memoryAddressRead);
 	bool	inAlloc;
 	if (inGlobal)
 		inAlloc = false;
@@ -3105,8 +3121,6 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
     }
     ReleaseLock(&Lock);
 }
-
-
 
 
 VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressWrite, UINT32 memoryWriteSize)

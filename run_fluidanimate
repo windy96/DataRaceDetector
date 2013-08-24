@@ -1,0 +1,18 @@
+pushd .
+cd /home/kim77/local/benchmark/parsec-3.0/pkgs/apps/fluidanimate/src_tool
+make OPT=-static
+cp fluidanimate fluidanimate_static
+make 
+cp fluidanimate fluidanimate_dynamic
+
+
+popd
+./run_global /home/kim77/local/benchmark/parsec-3.0/pkgs/apps/fluidanimate/src_tool/fluidanimate_static
+mv variable_info.txt variable_info_fluidanimate_static.txt
+./run_global /home/kim77/local/benchmark/parsec-3.0/pkgs/apps/fluidanimate/src_tool/fluidanimate_dynamic
+mv variable_info.txt variable_info_fluidanimate_dynamic.txt
+./trim variable_info_fluidanimate_static.txt variable_info_fluidanimate_dynamic.txt variable_info.txt
+
+./run64 drd /home/kim77/local/benchmark/parsec-3.0/pkgs/apps/fluidanimate/src_tool/fluidanimate_static 4 1 in_5K.fluid out.fluid
+
+
