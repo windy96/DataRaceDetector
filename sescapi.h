@@ -1,3 +1,5 @@
+#ifndef __SESCAPI_H__
+#define __SESCAPI_H__
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,6 +41,7 @@ void *malloc_pmc(size_t size);
 void *calloc_pmc(size_t nmemb, size_t size);
 void *realloc_pmc(void *ptr, size_t size);
 void free_pmc(void *ptr);
+int posix_memalign_pmc(void **memptr, size_t alignment, size_t size);
 
 //	PMC Thread Functions
 typedef struct pmcthread_barrier
@@ -52,3 +55,6 @@ void pmcthread_barrier_init(pmcthread_barrier_t *bar, int *i, int count);
 int pmcthread_barrier_wait(pmcthread_barrier_t *bar);
 void sesc_memfence(void *ptr);
 int pthread_cond_wait_null(void *cond, void *mutex);
+
+
+#endif

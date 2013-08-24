@@ -115,11 +115,13 @@ void	wr_first(void *addr, int size)
 
 
 //	Memory Allocation
+void *malloc_pmc(size_t size) __attribute__((noinline));
 void *malloc_pmc(size_t size)
 {
 	return malloc(size);
 }
 
+void *calloc_pmc(size_t nmemb, size_t size) __attribute__((noinline));
 void *calloc_pmc(size_t nmemb, size_t size)
 {
 	return calloc(nmemb, size);
@@ -130,10 +132,18 @@ void *realloc_pmc(void *ptr, size_t size)
 	return realloc(ptr, size);
 }
 
+void free_pmc(void *ptr) __attribute__((noinline));
 void free_pmc(void *ptr)
 {
 	return free(ptr);
 }
+
+int posix_memalign_pmc(void **memptr, size_t alignment, size_t size)
+{
+	return posix_memalign(memptr, alignment, size);
+
+}
+
 
 
 //	PMC Thread Functions
