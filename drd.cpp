@@ -394,12 +394,6 @@ public:
 		prevSize[tid] = size;
 
 		Logger.log("MAlloc tracker adds addr 0x%lx with size 0x%x.", addr, size);
-		int sum = 0;
-		int i;
-		for (i = 0; i < wordSize / WORD_SIZE; i++)
-			sum += (stateMap[addr]) [i].state;
-		Logger.log("verify: sum=%d i=%d", sum, i);
-			
 	}
 
 	void remove(ADDRINT addr) 
@@ -509,7 +503,6 @@ public:
 			return NULL;
 		}
 
-		//Logger.log("wordStatus: match found for 0x%lx: 0x%lx - 0x%lx: %d th entry", addr, startAddr, endAddr, (addr-startAddr)/WORD_SIZE);
 		return &( ( (stateMap[startAddr]) )[(addr - startAddr) / WORD_SIZE] );
 	}
 
@@ -1224,7 +1217,6 @@ VOID* callocWrapper(CONTEXT *ctxt, AFUNPTR orig_function, THREADID tid, int nmeb
 	VOID *ret;
 
 	Logger.warn("[tid: %d] calloc is called with nmeb %d and size %d, but wrapper function for calloc is not verified yet.", tid, nmeb, size);
-	// calloc writes values, so write to this memory area should be added.
 
 	PIN_CallApplicationFunction(ctxt, PIN_ThreadId(),
 		CALLINGSTD_DEFAULT, orig_function,
@@ -2061,7 +2053,7 @@ VOID ImageLoad(IMG img, VOID *v)
 	rtn = RTN_FindByName(img, "posix_memalign_pmc");
 	if (RTN_Valid(rtn)) {
 		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
-						"posix_memalign", PIN_PARG(VOID **), PIN_PARG(int), PIN_PARG(int), PIN_PARG_END() );
+						"posix_memalign", PIN_PARG(VOID *), PIN_PARG(int), PIN_PARG_END() );
 		RTN_ReplaceSignature(rtn, AFUNPTR(reallocWrapper), 
 			IARG_PROTOTYPE, proto,
 			IARG_CONST_CONTEXT,
@@ -2069,14 +2061,13 @@ VOID ImageLoad(IMG img, VOID *v)
 			IARG_THREAD_ID,
 			IARG_FUNCARG_ENTRYPOINT_VALUE, 0, 
 			IARG_FUNCARG_ENTRYPOINT_VALUE, 1, 
-			IARG_FUNCARG_ENTRYPOINT_VALUE, 2, 
 			IARG_END);
 	}
 
-	rtn = RTN_FindByName(img, "_Z18posix_memalign_pmcPPVmm");
+	rtn = RTN_FindByName(img, "_Z18posix_memalign_pmcPPvmm");
 	if (RTN_Valid(rtn)) {
 		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
-						"posix_memalign", PIN_PARG(VOID **), PIN_PARG(int), PIN_PARG(int), PIN_PARG_END() );
+						"posix_memalign", PIN_PARG(VOID *), PIN_PARG(int), PIN_PARG_END() );
 		RTN_ReplaceSignature(rtn, AFUNPTR(reallocWrapper), 
 			IARG_PROTOTYPE, proto,
 			IARG_CONST_CONTEXT,
@@ -2084,14 +2075,13 @@ VOID ImageLoad(IMG img, VOID *v)
 			IARG_THREAD_ID,
 			IARG_FUNCARG_ENTRYPOINT_VALUE, 0, 
 			IARG_FUNCARG_ENTRYPOINT_VALUE, 1, 
-			IARG_FUNCARG_ENTRYPOINT_VALUE, 2, 
 			IARG_END);
 	}
 
 	rtn = RTN_FindByName(img, "_Z18posix_memalign_pmcPPVjj");
 	if (RTN_Valid(rtn)) {
 		PROTO proto = PROTO_Allocate( PIN_PARG(VOID *), CALLINGSTD_DEFAULT,
-						"posix_memalign", PIN_PARG(VOID **), PIN_PARG(int), PIN_PARG(int), PIN_PARG_END() );
+						"posix_memalign", PIN_PARG(VOID *), PIN_PARG(int), PIN_PARG_END() );
 		RTN_ReplaceSignature(rtn, AFUNPTR(reallocWrapper), 
 			IARG_PROTOTYPE, proto,
 			IARG_CONST_CONTEXT,
@@ -2099,7 +2089,6 @@ VOID ImageLoad(IMG img, VOID *v)
 			IARG_THREAD_ID,
 			IARG_FUNCARG_ENTRYPOINT_VALUE, 0, 
 			IARG_FUNCARG_ENTRYPOINT_VALUE, 1, 
-			IARG_FUNCARG_ENTRYPOINT_VALUE, 2, 
 			IARG_END);
 	}
 
@@ -2292,6 +2281,7 @@ VOID ImageLoad(IMG img, VOID *v)
 				//IARG_FUNCARG_ENTRYPOINT_VALUE, 2,
 				IARG_END);
 		}
+
 
 		// pthread_cond_wait_null
 		rtn = RTN_FindByName(img, "_Z22pthread_cond_wait_nullPvS_");
@@ -2566,7 +2556,7 @@ void CheckBarrierResultBefore(THREADID tid)
 		MATracker.clear();
 		Ordering.clear();
 
-		Logger.warn("*** Epoch %d ended ***\n\n", BarrierCount);
+		Logger.log("*** Epoch %d ended ***\n\n", BarrierCount);
 		BarrierCount++;
 		CurrentBarrierArrival = 0;
 		for (int i = 0; i < MAX_THREADS; i++) 
@@ -2742,12 +2732,7 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
 	PIN_UnlockClient();
 
 	GetLock(&Lock, tid+1);
-
-/*
-	bool	inAlloc = MATracker.contain(memoryAddressRead);
 	bool	inGlobal = isGlobalVariable(memoryAddressRead);
-*/
-	bool 	inGlobal = isGlobalVariable(memoryAddressRead);
 	bool	inAlloc;
 	if (inGlobal)
 		inAlloc = false;
@@ -3011,7 +2996,7 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
                     Logger.warn("previously written by %d in epoch %d segment %d \n\tat location: col %d line %d file %s",
                     pStatus->proc, pStatus->epoch, pStatus->segment, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
 
-                    Logger.warn("read by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
+                    Logger.warn("read by %d in epoch %d segment %d\n\tat location: col %d line %d file %s", tid, BarrierCount, SegmentCount[tid], col, line, filename.c_str());
 
                     pStatus->state = 5;
                     pStatus->proc = tid;
@@ -3121,6 +3106,8 @@ VOID ReadsMemBefore (ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressR
     }
     ReleaseLock(&Lock);
 }
+
+
 
 
 VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressWrite, UINT32 memoryWriteSize)
@@ -3250,9 +3237,9 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
                         else
                             Logger.warn("variable %s (alloc) offset %d(0x%lx)",
                             MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
-                        Logger.warn("previously read by tid %d in location: col %d line %d file %s",
-                        pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-                        Logger.warn("written by tid %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
+                        Logger.warn("previously read by tid %d in epoch %d segment %d\n\tat location: col %d line %d file %s",
+                        pStatus->proc, pStatus->epoch, pStatus->segment, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+                        Logger.warn("written by tid %d in epoch %d segment %d\n\tat location: col %d line %d file %s", tid, BarrierCount, SegmentCount[tid], col, line, filename.c_str());
                     }
 
                     pStatus->state = 5;
@@ -3320,9 +3307,9 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
                         else
                             Logger.warn("variable %s (alloc) offset %d(0x%lx)",
                             MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
-                        Logger.warn("previously written by %d in location: col %d line %d file %s",
-                        pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-                        Logger.warn("written by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
+                        Logger.warn("previously written by %d in epoch %d segment %d\n\tat location: col %d line %d file %s",
+                        pStatus->proc, pStatus->epoch, pStatus->segment, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+                        Logger.warn("written by %d in epoch %d segment %d \t\nat location: col %d line %d file %s", tid, BarrierCount, SegmentCount[tid], col, line, filename.c_str());
                     }
 
                     pStatus->state = 5;
@@ -3372,9 +3359,9 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
                     else
                         Logger.warn("variable %s (alloc) offset %d(0x%lx)",
                         MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
-                    Logger.warn("previously written by %d in location: col %d line %d file %s",
-                    pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-                    Logger.warn("write by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
+                    Logger.warn("previously written by %d in epoch %d segment %d\n\tat location: col %d line %d file %s",
+                    pStatus->proc, pStatus->epoch, pStatus->segment, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+                    Logger.warn("write by %d in epoch %d segment %d\n\tat location: col %d line %d file %s", tid, BarrierCount, SegmentCount[tid], col, line, filename.c_str());
 
                     pStatus->state = 4;
                     pStatus->proc = tid;
@@ -3509,9 +3496,9 @@ VOID WritesMemBefore(ADDRINT applicationIp, THREADID tid, ADDRINT memoryAddressW
                     else
                         Logger.warn("variable %s (alloc) offset %d(0x%lx)",
                         MATracker.getVariableName(a).c_str(), MATracker.getOffset(a), MATracker.getOffset(a));
-                    Logger.warn("previously written by %d in location: col %d line %d file %s",
-                    pStatus->proc, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
-                    Logger.warn("write by %d in location: col %d line %d file %s", tid, col, line, filename.c_str());
+                    Logger.warn("previously written by %d in epoch %d segment %d\n\tat location: col %d line %d file %s",
+                    pStatus->proc, pStatus->epoch, pStatus->segment, pStatus->src.col, pStatus->src.line, pStatus->src.filename.c_str());
+                    Logger.warn("write by %d in epoch %d segment %d\n\tat location: col %d line %d file %s", tid, BarrierCount, SegmentCount[tid], col, line, filename.c_str());
 
                     pStatus->state = 5;
                     pStatus->proc = tid;
@@ -3727,7 +3714,6 @@ VOID Instruction(INS ins, void * v)
 
 			// jmp, call, ret do read, but these are for control flow.
 			// More data cache related, not our concern.
-			/*
 			if (!(INS_IsBranch(ins) || INS_IsCall(ins) || INS_IsRet(ins)))
 				INS_InsertPredicatedCall(ins, IPOINT_BEFORE, (AFUNPTR) ReadsMemBefore,
 					IARG_INST_PTR,
@@ -3735,7 +3721,6 @@ VOID Instruction(INS ins, void * v)
 					IARG_MEMORYOP_EA, memOp,
 					IARG_MEMORYREAD_SIZE,
 					IARG_END);
-			*/
 		}
 
 		if (INS_MemoryOperandIsWritten(ins, memOp)) {
